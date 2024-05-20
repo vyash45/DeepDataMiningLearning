@@ -9,6 +9,7 @@ from transformers import (AutoConfig, AutoModel, AutoModelForSeq2SeqLM, AutoMode
 import evaluate
 import torch
 import os
+import csv
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from accelerate import Accelerator
@@ -50,6 +51,10 @@ from utils_qa import preprocess_squad_batch, updateopenQAvalinputs, \
 # model = AutoModelForSeq2SeqLM.from_pretrained(model_checkpoint)
 
 def modelparameters(model, unfreezename=""):
+    # print('fsdfsdfsdfsdfsd',model.named_parameters)
+    # for name, param in model.named_parameters():
+    #     print(name,' ', param)
+    l = model.named_parameters()
     if unfreezename:
         for name, param in model.named_parameters():
             if name.startswith(unfreezename): # choose whatever you like here
@@ -166,6 +171,10 @@ def loaddata(args, USE_HPC):
                 raw_datasets = load_dataset("arrow", data_files={'train': trainarrowpath})
                 text_column = "document"
                 target_column = "summary"
+            elif args.data_name == 'multi_news':
+                raw_datasets = load_dataset("multi_news")
+                text_column = "document"
+                target_column = "summary"
             else:
                 raw_datasets = load_dataset(args.data_name, language_pair=(args.target_lang,args.source_lang))
                 text_column =  "en"
@@ -214,6 +223,10 @@ def loaddata(args, USE_HPC):
                 task_column ="question"
                 text_column = "context"
                 target_column = "answers"
+            elif args.data_name == 'multi_news':
+                raw_datasets = load_dataset("multi_news")
+                text_column = "document"
+                target_column = "summary"
             else: 
                 #raw_datasets = load_dataset(args.data_name, args.dataconfig) #dataconfig="train_asks[:5000]"
                 raw_datasets = load_dataset(args.data_name)
@@ -357,6 +370,13 @@ class myRouge:
         return result
 
 
+import csv
+
+def write_results_to_csv(results, csv_file):
+    with open(csv_file, mode='a', newline='') as file:  # 'a' for append mode
+        writer = csv.writer(file)
+        for key, value in results.items():
+            writer.writerow([key, value])
 
 class myEvaluator:
     def __init__(self, args, useHFevaluator=False, dualevaluator=False):
@@ -391,6 +411,12 @@ class myEvaluator:
                 results = self.HFmetric.compute(predictions=predictions, references=references)
                 #keys: ['score', 'counts', 'totals', 'precisions', 'bp', 'sys_len', 'ref_len']
                 print("HF evaluator:", results)
+                csv_file = "results.csv"
+                with open(csv_file, mode='w', newline='') as file:
+                    writer = csv.writer(file)
+                    writer.writerow(['Metric', 'Value'])
+                    for key, value in results.items():
+                        writer.writerow([key, value])
             else:
                 if self.task=="translation":
                     bleu = sacrebleu.corpus_bleu(predictions, references)
@@ -409,6 +435,7 @@ class myEvaluator:
                     results = self.HFmetric.compute(use_stemmer=True)
                 #print("HF evaluator:", results["score"])
                 print("HF evaluator:", results)
+                write_results_to_csv(results, 'hf.csv')
             
             if self.useHFevaluator==False or self.dualevaluator==True:
                 if self.task=="translation":
@@ -425,6 +452,7 @@ class myEvaluator:
                 elif self.task=="summarization":
                     results = self.localscorer._compute(self.preds, self.refs)
                 print("Local evaluator:", results)
+                write_results_to_csv(results, 'le.csv')
         return results
     
     def add_batch(self, predictions, references):
@@ -699,11 +727,11 @@ if __name__ == "__main__":
                     help='train_asks[:5000]')
     parser.add_argument('--subset', type=float, default=5000,
                     help='0 means all dataset')
-    parser.add_argument('--cache_path', type=str, default="D:/Cache/huggingface",
+    parser.add_argument('--cache_path', type=str, default="/data/cmpe258-sp24/Huggingfacecache",
                     help='path to huggingface cache: /data/cmpe249-fa23/Huggingfacecache')
-    parser.add_argument('--model_checkpoint', type=str, default="facebook/wmt21-dense-24-wide-en-x",
+    parser.add_argument('--model_checkpoint', type=str, default="google-t5/t5-base",
                     help='Model checkpoint name from HF, t5-base, mybert, distilbert-base-uncased, t5-small, t5-base, Helsinki-NLP/opus-mt-en-zh, Helsinki-NLP/opus-mt-en-fr, t5-small, facebook/wmt21-dense-24-wide-en-x')
-    parser.add_argument('--task', type=str, default="translation",
+    parser.add_argument('--task', type=str, default="summarization",
                     help='NLP tasks: openqa, translation, summarization, QA')
     parser.add_argument('--hfevaluate', default=False, action='store_true',
                     help='perform evaluation via HFevaluate or localevaluate')
@@ -719,7 +747,7 @@ if __name__ == "__main__":
     )
     parser.add_argument('--pretrained', type=str, default="",
                     help='Pretrained model path')
-    parser.add_argument('--unfreezename', type=str, default="model.decoder.layers.23",
+    parser.add_argument('--unfreezename', type=str, default="decoder.block.11.layer",
                     help='Unfreezename in models')
     parser.add_argument('--outputdir', type=str, default="./output",
                     help='output path')
@@ -734,7 +762,7 @@ if __name__ == "__main__":
     parser.add_argument('--gpuid', default=0, type=int, help='GPU id')
     parser.add_argument('--total_epochs', default=16, type=int, help='Total epochs to train the model')
     parser.add_argument('--save_every', default=2, type=int, help='How often to save a snapshot')
-    parser.add_argument('--batch_size', default=8, type=int, help='Input batch size on each device (default: 32)')
+    parser.add_argument('--batch_size', default=4, type=int, help='Input batch size on each device (default: 32)')
     parser.add_argument('--learningrate', default=2e-5, type=float, help='Learning rate')
     parser.add_argument(
         "--lr_scheduler_type",
@@ -762,7 +790,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_source_length",
         type=int,
-        default=384, #128, #1024,
+        default=128, #128, #1024,
         help=(
             "The maximum total input sequence length after "
             "tokenization.Sequences longer than this will be truncated, sequences shorter will be padded."
@@ -771,7 +799,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max_target_length",
         type=int,
-        default=128,
+        default=64,
         help=(
             "The maximum total sequence length for target text after "
             "tokenization. Sequences longer than this will be truncated, sequences shorter will be padded "
@@ -824,7 +852,7 @@ if __name__ == "__main__":
         os.environ['HTTP_PROXY'] = "http://172.16.1.2:3128"
         os.environ['https_proxy'] = "https://172.16.1.2:3128"
         os.environ['HTTPS_PROXY'] = "https://172.16.1.2:3128"
-        trainoutput="/data/cmpe249-fa23/trainoutput/huggingface"
+        trainoutput="/data/cmpe258-sp24/trainoutput/huggingface"
         #taskname=args.traintag #"eli5asksciencemodeling"
     else:
         trainoutput=args.outputdir #"./output"
@@ -1073,6 +1101,9 @@ if __name__ == "__main__":
             device = torch.device("mps")
         else:
             device = torch.device("cpu")
+        allocated_memory_before = torch.cuda.memory_allocated(device)
+    
+        print(f"Memory allocated on {device}: {allocated_memory_before / (1024**3):.2f} GiB")
 
         model.to(device)
         print("Using device:", device)
@@ -1145,4 +1176,3 @@ if __name__ == "__main__":
     del model, optimizer, lr_scheduler
     if use_accelerator:
         accelerator.free_memory()
-
